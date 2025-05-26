@@ -39,58 +39,64 @@ export default function Home() {
   };
 
   useEffect(() => {
-    // 1️⃣ Subscribe to Supabase Realtime channel
-    const channel = supabase
-      .channel('public:signals')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'signals', filter: `room=eq.${room}` },
-        ({ new: row }) => handleSignal(row.payload)
-      )
-      .subscribe()
-      .then(() => {
-        console.log('✅ Subscribed to Supabase signals');
-        setStatus('🔗 waiting for peers…');
-      });
+  // 1️⃣ Subscribe to Supabase Realtime channel
+  const channel = supabase
+    .channel('public:signals')
+    .on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'signals',
+        filter: `room=eq.${room}`
+      },
+      ({ new: row }) => handleSignal(row.payload)
+    );
 
-    // 2️⃣ Setup RTCPeerConnection
-    pcRef.current = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  // Subscribe (no .then())
+  channel.subscribe();
+  console.log('✅ Subscribed to Supabase signals');
+  setStatus('🔗 waiting for peers…');
+
+  // 2️⃣ Setup RTCPeerConnection
+  pcRef.current = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  });
+  pcRef.current.onicecandidate = ({ candidate }) => {
+    if (candidate) {
+      console.log('➡️ Sending ICE', candidate);
+      supabase.from('signals').insert({
+        room,
+        payload: { type: 'ice-candidate', data: candidate }
+      });
+    }
+  };
+  pcRef.current.ontrack = ({ streams }) => {
+    console.log('🎥 Remote stream received');
+    remoteVidRef.current.srcObject = streams[0];
+  };
+
+  // 3️⃣ Get local media
+  navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+    .then(stream => {
+      console.log('🎥 Local stream ready');
+      localVidRef.current.srcObject = stream;
+      stream.getTracks().forEach(track =>
+        pcRef.current.addTrack(track, stream)
+      );
+      setStatus('📹 ready');
+    })
+    .catch(err => {
+      console.error('❌ getUserMedia error', err);
+      setStatus('❌ camera/mic error');
     });
-    pcRef.current.onicecandidate = ({ candidate }) => {
-      if (candidate) {
-        console.log('➡️ Sending ICE', candidate);
-        supabase.from('signals').insert({
-          room,
-          payload: { type: 'ice-candidate', data: candidate }
-        });
-      }
-    };
-    pcRef.current.ontrack = ({ streams }) => {
-      console.log('🎥 Remote stream received');
-      remoteVidRef.current.srcObject = streams[0];
-    };
 
-    // 3️⃣ Get local media
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-      .then(stream => {
-        console.log('🎥 Local stream ready');
-        localVidRef.current.srcObject = stream;
-        stream.getTracks().forEach(track =>
-          pcRef.current.addTrack(track, stream)
-        );
-        setStatus('📹 ready');
-      })
-      .catch(err => {
-        console.error('❌ getUserMedia error', err);
-        setStatus('❌ camera/mic error');
-      });
+  return () => {
+    supabase.removeChannel(channel);
+    pcRef.current.close();
+  };
+}, []);
 
-    return () => {
-      supabase.removeChannel(channel);
-      pcRef.current.close();
-    };
-  }, []);
 
   // Always-visible button to initiate an offer
   const startCall = async () => {
